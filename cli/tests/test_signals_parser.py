@@ -114,6 +114,31 @@ class SignalGraphTest(unittest.TestCase):
             )
             self.assertTrue(all(e["sender"] is None for e in edges))
 
+    def test_no_sender_note_kept_for_an_aliased_model_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _copy_miniapp(root)
+            _write(
+                root / "accounts" / "signals.py",
+                "from django.db.models.signals import post_save as saved\n"
+                "from django.db.models.signals import pre_migrate as migrating\n"
+                "from django.dispatch import receiver\n\n"
+                "@receiver(saved)\n"
+                "def audit_every_save(sender, instance, **kwargs):\n"
+                "    pass\n\n"
+                "@receiver(migrating)\n"
+                "def before_migrate(sender, **kwargs):\n"
+                "    pass\n",
+            )
+
+            edges = signal_graph(str(root))["edges"]
+
+            notes = {e["handler"].rsplit(".", 1)[-1]: e.get("note") for e in edges}
+            self.assertEqual(
+                notes,
+                {"audit_every_save": "no sender = fires for all models", "before_migrate": None},
+            )
+
     def test_orphan_handler_when_sender_missing_from_workspace(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

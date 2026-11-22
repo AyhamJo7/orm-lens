@@ -88,6 +88,19 @@ def _name_of(node: ast.AST) -> str | None:
     return None
 
 
+def _collect_model_signal_aliases(tree: ast.AST) -> dict[str, str]:
+    """Map local names bound by ``from django.db.models.signals import X as Y``
+    to the model signal ``X`` they stand for.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "django.db.models.signals":
+            for alias in node.names:
+                if alias.asname and alias.name in _MODEL_SIGNALS:
+                    aliases[alias.asname] = alias.name
+    return aliases
+
+
 def _collect_receiver_aliases(tree: ast.AST) -> set[str]:
     """Collect dotted names and bare identifiers in a module that resolve
     to ``django.dispatch.receiver``.
@@ -339,6 +352,7 @@ def signal_graph(
         handler: str,
         file: str,
         via: str,
+        model_signal_aliases: dict[str, str] | None = None,
     ) -> None:
         sender, note = _resolve_sender(sender_raw, model_index, user_model_name)
         edge: dict[str, Any] = {
@@ -348,7 +362,8 @@ def signal_graph(
             "file": file,
         }
         if sender_raw is None:
-            if signal_name.rsplit(".", 1)[-1] in _MODEL_SIGNALS:
+            resolved = (model_signal_aliases or {}).get(signal_name, signal_name)
+            if resolved.rsplit(".", 1)[-1] in _MODEL_SIGNALS:
                 edge["note"] = "no sender = fires for all models"
         elif note:
             edge["note"] = note
@@ -365,6 +380,7 @@ def signal_graph(
     # Pass 2 — decorators, .connect() and .send() calls.
     for py, tree, module_path in parsed:
         receiver_aliases = _collect_receiver_aliases(tree)
+        model_signal_aliases = _collect_model_signal_aliases(tree)
         # Walk all functions (module-level + nested) for @receiver decorators.
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -383,6 +399,7 @@ def signal_graph(
                             handler_fqn,
                             _rel(root_path, py, node.lineno),
                             "@receiver",
+                            model_signal_aliases,
                         )
 
             if isinstance(node, ast.Call):
@@ -397,6 +414,7 @@ def signal_graph(
                         handler,
                         _rel(root_path, py, node.lineno),
                         ".connect()",
+                        model_signal_aliases,
                     )
                     continue
 
