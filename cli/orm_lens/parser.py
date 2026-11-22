@@ -1697,8 +1697,8 @@ _STAR_IMPORT_RE = re.compile(
 #: ``get_model`` or any ``<name>.get_model`` (``apps``, oscar's ``loading``).
 #: Only string-constant arguments name a model the scan can find.
 _GET_MODEL_RE = re.compile(
-    r"^(\w+)[ \t]*=[ \t]*(?:[\w.]+\.)?get_model\([ \t]*"
-    r"""(["'])(\w+)\2[ \t]*,[ \t]*(["'])(\w+)\4[ \t]*,?[ \t]*\)""",
+    r"^(\w+)[ \t]*=[ \t]*(?:[\w.]+\.)?get_model\(\s*"
+    r"""(["'])(\w+)\2\s*,\s*(["'])(\w+)\4\s*,?\s*\)""",
     re.M,
 )
 
@@ -1811,13 +1811,16 @@ class _WorkspaceResolver:
         """Index concrete classes by ``(app_label, lowercased name)``.
 
         This is what a ``get_model("offer", "Benefit")`` binding resolves
-        against. Call it before the first lookup: lookups are cached.
+        against. Indexing more models drops the cached lookups, which may
+        have resolved against the smaller index.
         """
         labels = _configured_app_labels(models)
         for model in models:
             if not _is_abstract(model):
                 key = (_effective_app_label(model, labels), model.name.lower())
                 self.models_by_label.setdefault(key, model)
+        self._lookups.clear()
+        self._model_roots.clear()
 
     def _resolved(self, path: Path) -> Path:
         """``path.resolve()`` once per path for the lifetime of the scan."""
@@ -2048,6 +2051,16 @@ def _pull_imported_bases(
     return pulled
 
 
+def _star_imports(file_path: str, content: str) -> list[tuple[str, str]]:
+    """``(file, module)`` for each ``from <module> import *`` outside a string."""
+    in_string = _lines_inside_strings(content.splitlines())
+    return [
+        (file_path, m.group(1))
+        for m in _STAR_IMPORT_RE.finditer(content)
+        if content.count("\n", 0, m.start()) not in in_string
+    ]
+
+
 def _pull_star_imported_defs(
     star_imports: Iterable[tuple[str, str]],
     known: Iterable[ParsedModel],
@@ -2257,15 +2270,15 @@ def scan_workspace(
                 file=sys.stderr,
             )
             continue
-        star_imports.extend(
-            (str(py), m.group(1)) for m in _STAR_IMPORT_RE.finditer(content)
-        )
+        star_imports.extend(_star_imports(str(py), content))
     resolver = _WorkspaceResolver(root_path, exclude_globs)
     all_defs.extend(_pull_star_imported_defs(star_imports, all_defs, resolver))
     resolver.index_models(all_defs)
     all_defs.extend(
         _pull_imported_bases(all_defs, root_path, exclude_globs, resolver)
     )
+    # A base found through an ordinary import can be a get_model target.
+    resolver.index_models(all_defs)
 
     found = _resolve_and_filter(all_defs, resolver)
     _attach_implicit_parent_links(found, resolver)

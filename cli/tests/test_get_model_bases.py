@@ -100,3 +100,82 @@ class GetModelBaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _scan_files(root: Path, files: dict[str, str]) -> dict[str, ParsedModel]:
+    app = root / "offer"
+    app.mkdir(exist_ok=True)
+    (app / "__init__.py").write_text("")
+    for name, content in files.items():
+        (app / name).write_text(content)
+    index = scan_workspace(str(root))
+    return {m.name: m for a in index.apps for m in a.models}
+
+
+# The alias differs from the target name, so a base found by name alone
+# cannot stand in for the get_model binding being resolved.
+BOUND_BENEFIT_SUBCLASS = "\n\nclass MultiBuyBenefit(BoundBenefit):\n    pass\n"
+
+
+class GetModelBaseReviewTests(unittest.TestCase):
+    def test_a_get_model_call_split_over_lines_is_resolved(self) -> None:
+        benefits = (
+            "from oscar.core.loading import get_model\n"
+            "\n"
+            "BoundBenefit = get_model(\n"
+            '    "offer",\n'
+            '    "Benefit",\n'
+            ")\n" + BOUND_BENEFIT_SUBCLASS
+        )
+        with TemporaryDirectory() as tmp:
+            models = _scan_files(Path(tmp), {"models.py": MODELS, "benefits.py": benefits})
+        self.assertIn("MultiBuyBenefit", models)
+        self.assertEqual(models["MultiBuyBenefit"].implicit_parent_links, {"benefit_ptr"})
+
+    def test_a_star_import_inside_a_string_is_not_read(self) -> None:
+        models_py = (
+            '"""Example:\n'
+            "\n"
+            "from offer.examples import *\n"
+            '"""\n'
+            "from django.db import models\n"
+            "\n"
+            "\n"
+            "class Benefit(models.Model):\n"
+            "    value = models.IntegerField()\n"
+        )
+        examples = "from django.db import models\n\n\nclass ExampleModel(models.Model):\n    pass\n"
+        with TemporaryDirectory() as tmp:
+            models = _scan_files(Path(tmp), {"models.py": models_py, "examples.py": examples})
+        self.assertEqual(sorted(models), ["Benefit"])
+
+    def test_a_get_model_target_found_through_an_ordinary_import_resolves(self) -> None:
+        models_py = (
+            "from django.db import models\n"
+            "\n"
+            "from offer.benefits import *  # noqa\n"
+            "from .entities import Benefit\n"
+            "\n"
+            "\n"
+            "class Special(Benefit):\n"
+            "    pass\n"
+        )
+        entities = (
+            "from django.db import models\n"
+            "\n"
+            "\n"
+            "class Benefit(models.Model):\n"
+            "    value = models.IntegerField()\n"
+        )
+        benefits = (
+            "from oscar.core.loading import get_model\n"
+            "\n"
+            'BoundBenefit = get_model("offer", "Benefit")\n' + BOUND_BENEFIT_SUBCLASS
+        )
+        with TemporaryDirectory() as tmp:
+            models = _scan_files(
+                Path(tmp),
+                {"models.py": models_py, "entities.py": entities, "benefits.py": benefits},
+            )
+        self.assertIn("MultiBuyBenefit", models)
+        self.assertEqual(models["MultiBuyBenefit"].implicit_parent_links, {"benefit_ptr"})
