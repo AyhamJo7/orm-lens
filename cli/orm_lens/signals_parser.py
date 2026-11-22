@@ -42,6 +42,17 @@ _BUILTIN_SIGNALS = frozenset(
     }
 )
 
+# Built-in signals whose sender is a model class: only for these does a missing
+# ``sender=`` mean "fires for every model".
+_MODEL_SIGNALS = frozenset(
+    {
+        "pre_init", "post_init",
+        "pre_save", "post_save",
+        "pre_delete", "post_delete",
+        "m2m_changed",
+    }
+)
+
 
 def _rel(root: Path, path: Path, line: int) -> str:
     try:
@@ -337,7 +348,8 @@ def signal_graph(
             "file": file,
         }
         if sender_raw is None:
-            edge["note"] = "no sender = fires for all models"
+            if signal_name.rsplit(".", 1)[-1] in _MODEL_SIGNALS:
+                edge["note"] = "no sender = fires for all models"
         elif note:
             edge["note"] = note
             orphan_handlers.append(
