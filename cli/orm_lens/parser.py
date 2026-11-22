@@ -1690,6 +1690,17 @@ _FROM_IMPORT_RE = re.compile(
     re.M,
 )
 _IMPORT_RE = re.compile(r"^[ \t]*import[ \t]+([^\n]+)", re.M)
+_STAR_IMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(\.+[\w.]*|[\w.]+)[ \t]+import[ \t]+\*", re.M
+)
+#: ``Benefit = get_model("offer", "Benefit")`` at module level, through
+#: ``get_model`` or any ``<name>.get_model`` (``apps``, oscar's ``loading``).
+#: Only string-constant arguments name a model the scan can find.
+_GET_MODEL_RE = re.compile(
+    r"^(\w+)[ \t]*=[ \t]*(?:[\w.]+\.)?get_model\([ \t]*"
+    r"""(["'])(\w+)\2[ \t]*,[ \t]*(["'])(\w+)\4[ \t]*,?[ \t]*\)""",
+    re.M,
+)
 
 #: How many re-exports a base may sit behind (``core/db/__init__.py`` doing
 #: ``from .bases import SoftDeletable`` is one). Bounds a malformed import
@@ -1765,6 +1776,8 @@ class _ModuleEntry:
     defs: dict[str, ParsedModel]
     imports: dict[str, tuple[str, str | None]]
     non_models: frozenset[str]
+    model_refs: dict[str, tuple[str, str]] = dataclass_field(default_factory=dict)
+    """Names bound by ``get_model``, to ``(app_label, lowercased model name)``."""
 
 
 class _WorkspaceResolver:
@@ -1792,6 +1805,19 @@ class _WorkspaceResolver:
             tuple[Path, str], tuple[bool, ParsedModel | None]
         ] = {}
         self._model_roots: dict[tuple[Path, str], tuple[str, str] | None] = {}
+        self.models_by_label: dict[tuple[str, str], ParsedModel] = {}
+
+    def index_models(self, models: Sequence[ParsedModel]) -> None:
+        """Index concrete classes by ``(app_label, lowercased name)``.
+
+        This is what a ``get_model("offer", "Benefit")`` binding resolves
+        against. Call it before the first lookup: lookups are cached.
+        """
+        labels = _configured_app_labels(models)
+        for model in models:
+            if not _is_abstract(model):
+                key = (_effective_app_label(model, labels), model.name.lower())
+                self.models_by_label.setdefault(key, model)
 
     def _resolved(self, path: Path) -> Path:
         """``path.resolve()`` once per path for the lifetime of the scan."""
@@ -1831,7 +1857,13 @@ class _WorkspaceResolver:
                     defs.setdefault(d.name, d)
         except Exception:
             return None
-        entry = _ModuleEntry(defs, _parse_imports(content), frozenset(non_models))
+        model_refs = {
+            m.group(1): (m.group(3), m.group(5).lower())
+            for m in _GET_MODEL_RE.finditer(content)
+        }
+        entry = _ModuleEntry(
+            defs, _parse_imports(content), frozenset(non_models), model_refs
+        )
         self.loaded[path] = entry
         return entry
 
@@ -1854,6 +1886,9 @@ class _WorkspaceResolver:
                 return True, defs[name]
             if name in non_models:
                 return True, None
+            if name in entry.model_refs:
+                model = self.models_by_label.get(entry.model_refs[name])
+                return model is not None, model
             target = imports.get(name)
             if target is None or target[1] is None:
                 return False, None
@@ -2010,6 +2045,35 @@ def _pull_imported_bases(
         known_defs.add(key)
         pulled.append(found)
         queue.extend((norm(found.file_path), b) for b in found.base_classes)
+    return pulled
+
+
+def _pull_star_imported_defs(
+    star_imports: Iterable[tuple[str, str]],
+    known: Iterable[ParsedModel],
+    resolver: _WorkspaceResolver,
+) -> list[ParsedModel]:
+    """Classes of the modules a models file star-imports.
+
+    Loading ``offer/models.py`` runs ``from offer.benefits import *``, so
+    Django also registers every model ``benefits.py`` defines, whatever its
+    ``__all__`` says; django-oscar keeps its benefit and condition proxies
+    there (#341). ``star_imports`` holds ``(models file, module)`` pairs; the
+    first workspace file the module resolves to is read, as in a lookup.
+    """
+    known_defs = {(resolver._resolved(Path(m.file_path)), m.name) for m in known}
+    pulled: list[ParsedModel] = []
+    for from_file, module in star_imports:
+        for candidate in _module_files(module, from_file, resolver.root):
+            entry = resolver.load(candidate)
+            if entry is None:
+                continue
+            for found in entry.defs.values():
+                key = (resolver._resolved(Path(found.file_path)), found.name)
+                if key not in known_defs:
+                    known_defs.add(key)
+                    pulled.append(found)
+            break
     return pulled
 
 
@@ -2175,6 +2239,7 @@ def scan_workspace(
     """
     root_path = Path(root).resolve()
     all_defs: list[ParsedModel] = []
+    star_imports: list[tuple[str, str]] = []
     scanned_files = 0
     for py in _iter_python_files(root_path, exclude_globs):
         scanned_files += 1
@@ -2192,7 +2257,12 @@ def scan_workspace(
                 file=sys.stderr,
             )
             continue
+        star_imports.extend(
+            (str(py), m.group(1)) for m in _STAR_IMPORT_RE.finditer(content)
+        )
     resolver = _WorkspaceResolver(root_path, exclude_globs)
+    all_defs.extend(_pull_star_imported_defs(star_imports, all_defs, resolver))
+    resolver.index_models(all_defs)
     all_defs.extend(
         _pull_imported_bases(all_defs, root_path, exclude_globs, resolver)
     )
