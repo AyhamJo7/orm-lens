@@ -1904,9 +1904,12 @@ def analyze_migration_risks(
         # itself is Django's: dependencies first, the numeric prefix only
         # breaks ties.
         trees: list[tuple[Path, ast.Module]] = []
+        unreadable = False
         for path in candidates:
             tree = _read_migration_tree(path)
-            if tree is not None and _find_migration_class(tree) is not None:
+            if tree is None:
+                unreadable = True
+            elif _find_migration_class(tree) is not None:
                 trees.append((path, tree))
         has_configured_label = app_label in configured_labels
         ordered = _replay_order(trees, app_label=app_label, infer_label=not has_configured_label)
@@ -1953,13 +1956,14 @@ def analyze_migration_risks(
             # Same reasoning when a migration computes its `dependencies`
             # (`dependencies = get_dependencies()`): we read them as `[]`, so
             # its parent looks like a leaf. We cannot tell the graph's shape,
-            # so stay silent for the app.
+            # so stay silent for the app. A file that does not parse (e.g.
+            # Python 3.14 syntax on an older interpreter) leaves the same hole.
             effective_label = (
                 app_label
                 if has_configured_label
                 else _resolve_app_label({m["name"]: m["dependencies"] for m in parsed}, app_label)
             )
-            deps_unknown = any(m.get("dependencies_unknown") for m in parsed)
+            deps_unknown = unreadable or any(m.get("dependencies_unknown") for m in parsed)
             leaves = (
                 _compute_roots_leaves_cross(
                     _collapse_squashed(parsed, effective_label), effective_label
