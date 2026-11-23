@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the 12 benefit and condition proxies are found and their stale-table lines
   leave `drift`.
 
+- **signals: "fires for all models" only on model signals**
+  ([#340](https://github.com/FROWNINGdev/orm-lens/issues/340)).
+  A receiver without `sender=` got the note `no sender = fires for all models`
+  whatever the signal was, including `user_logged_in`, `pre_migrate` and
+  project signals, which models never send. The note now appears only for
+  `pre_init`, `post_init`, `pre_save`, `post_save`, `pre_delete`,
+  `post_delete` and `m2m_changed`; the sender still shows as `<any>`.
+
 ## [py-1.18.2] - 2026-11-22
 
 > Drift understands MPTT, parent links and hand-written migrations.
