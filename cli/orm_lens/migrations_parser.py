@@ -610,6 +610,33 @@ def _has_effective_default(field_call: ast.Call, field_type: str) -> bool:
     )
 
 
+# Fields that are nullable by definition. ``NullBooleanField.__init__`` sets
+# ``null=True`` itself, so migrations never write the keyword for it. Django
+# 4.0 removed the field from models but keeps it for old migrations.
+_NULLABLE_BY_DEFINITION = frozenset({"NullBooleanField"})
+
+
+def _is_nullable(field_call: ast.Call, field_type: str) -> bool:
+    """True when the column accepts NULL: ``null=True`` or a nullable-by-definition field."""
+    return (
+        _kwarg_literal(field_call, "null") is True
+        or field_type in _NULLABLE_BY_DEFINITION
+    )
+
+
+def _is_not_null(field_call: ast.Call, field_type: str) -> bool:
+    """True when the column is NOT NULL: ``null=False`` or no ``null=`` at all.
+
+    A ``null=`` that is not a literal (a variable, a call) is neither: its
+    value is unknown here, so no NOT NULL finding is claimed for it.
+    """
+    if field_type in _NULLABLE_BY_DEFINITION:
+        return False
+    if not _has_kwarg(field_call, "null"):
+        return True
+    return _kwarg_literal(field_call, "null") is False
+
+
 def _migration_prefix(name: str) -> int:
     """Return the numeric prefix of a migration filename stem, or -1."""
     m = _MIGRATION_PREFIX_RE.match(name)
@@ -1269,7 +1296,6 @@ class MigrationRiskAnalyzer:
         if field_call is None:
             return
 
-        null_val = _kwarg_literal(field_call, "null")
         has_default = _has_kwarg(field_call, "default")
         unique_val = _kwarg_literal(field_call, "unique")
         field_type = _field_type(field_call) or "Field"
@@ -1282,8 +1308,9 @@ class MigrationRiskAnalyzer:
         # Rule 1: NOT NULL with no default on a populated table.
         # ``null=True`` explicit means nullable → no risk.
         # No null kwarg means default False (NOT NULL) → risk if no default and
-        # the table already exists.
-        is_not_null = null_val is False or null_val is None
+        # the table already exists. NullBooleanField is the exception: it is
+        # nullable without the keyword (see _is_not_null).
+        is_not_null = _is_not_null(field_call, field_type)
         if (
             is_not_null
             and not has_default
@@ -1340,16 +1367,47 @@ class MigrationRiskAnalyzer:
         default_is_none = (
             isinstance(default_node, ast.Constant) and default_node.value is None
         )
-        nulls_fill_rows = null_val is True and (not has_default or default_is_none)
+        # When ``db_default=`` is present, Django's schema editor fills
+        # existing rows from it and ignores any Python ``default=``. Rows get
+        # NULL only with ``db_default=None``; any other value replaces the
+        # NULL fill.
+        db_default_node = _get_kwarg(field_call, "db_default")
+        has_db_default = db_default_node is not None
+        db_default_is_none = (
+            isinstance(db_default_node, ast.Constant) and db_default_node.value is None
+        )
+        if has_db_default:
+            nulls_fill_rows = _is_nullable(field_call, field_type) and db_default_is_none
+        else:
+            nulls_fill_rows = _is_nullable(field_call, field_type) and (
+                not has_default or default_is_none
+            )
         if unique_val is True and populated and not nulls_fill_rows:
             default_node = _get_kwarg(field_call, "default")
             # A callable default (e.g. ``default=uuid.uuid4``) can produce
             # unique values per row → medium. Anything else (literal or
             # missing) will fail on duplicates → high.
             default_is_callable = isinstance(default_node, (ast.Name, ast.Attribute))
-            if default_is_callable:
+            # A database expression in ``db_default=`` (e.g. ``RandomUUID()``)
+            # may be evaluated per row (PostgreSQL evaluates volatile
+            # defaults for each existing row), so it is uncertain rather than
+            # a certain collision. A literal ``db_default=True`` still copies
+            # one value to every row and stays critical. When adding the
+            # column, Django's schema editor uses ``db_default`` and ignores
+            # any Python ``default=``, so the Python default does not matter
+            # here.
+            db_default_is_expression = isinstance(db_default_node, ast.Call)
+            if db_default_is_expression:
                 confidence: Confidence = "medium"
                 severity: Severity = "warning"
+                desc = (
+                    f"Adds UNIQUE column '{name}' to '{model}' with a database "
+                    f"expression as db_default; verify it produces unique "
+                    f"values per row."
+                )
+            elif default_is_callable and not has_db_default:
+                confidence = "medium"
+                severity = "warning"
                 desc = (
                     f"Adds UNIQUE column '{name}' to '{model}' with a callable "
                     f"default; verify it produces unique values per row."
