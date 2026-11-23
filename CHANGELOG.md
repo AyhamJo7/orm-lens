@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer declared". They now come from the same table as the
   `django.contrib.auth` bases; a workspace class of that name still wins.
 
+- **parser: resolve a base bound by `get_model("app", "Model")`**
+  ([#341](https://github.com/FROWNINGdev/orm-lens/issues/341)).
+  django-oscar binds `Benefit = get_model("offer", "Benefit")` in
+  `offer/benefits.py`, subclasses it there, and star-imports that module from
+  `offer/models.py`. The scan now reads modules a models file star-imports and
+  resolves a `get_model` binding with string arguments to the workspace model
+  with that app label (`AppConfig.label` when set) and name. On django-oscar,
+  the 12 benefit and condition proxies are found and their stale-table lines
+  leave `drift`.
+
 ## [py-1.18.2] - 2026-11-22
 
 > Drift understands MPTT, parent links and hand-written migrations.
