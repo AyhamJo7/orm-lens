@@ -1329,6 +1329,13 @@ _MODEL_ROOT_TAIL = re.compile(
     r"|PolymorphicModel|MPTTModel)$"
 )
 _DJANGO_MODEL_MODULE = re.compile(r"^django\.db\.models(\.base)?$")
+_THIRD_PARTY_MODEL_ROOTS: dict[str, tuple[str, ...]] = {
+    "solo.models": ("SingletonModel",),
+    "tree_queries.models": ("TreeNode",),
+    "treebeard.mp_tree": ("MP_Node",),
+    "treebeard.ns_tree": ("NS_Node",),
+    "treebeard.al_tree": ("AL_Node",),
+}
 
 
 def _has_model_ancestry(
@@ -1445,8 +1452,14 @@ _PERMISSIONS_MIXIN = (
 
 # Fields of django.contrib.auth's abstract bases, which live in site-packages
 # where a workspace scan never looks. ``is_active`` on AbstractBaseUser is a
-# plain class attribute, not a field. A workspace class of the same name wins.
+# plain class attribute, not a field. ``TimeStampedModel`` declares
+# ``created`` and ``modified`` in both django-extensions and django-model-utils.
+# A workspace class of the same name wins.
 DJANGO_ABSTRACT_BASES: dict[str, tuple[ParsedField, ...]] = {
+    "TimeStampedModel": (
+        _django_field("created", "DateTimeField", "auto_now_add=True", "TimeStampedModel"),
+        _django_field("modified", "DateTimeField", "auto_now=True", "TimeStampedModel"),
+    ),
     "AbstractBaseUser": _ABSTRACT_BASE_USER,
     "PermissionsMixin": _PERMISSIONS_MIXIN,
     "AbstractUser": (
@@ -1985,6 +1998,8 @@ class _WorkspaceResolver:
             _DJANGO_MODEL_MODULE.match(module)
             or module in ("model_utils.models", "polymorphic.models", "mptt.models")
         ):
+            return module, target_name
+        if target_name in _THIRD_PARTY_MODEL_ROOTS.get(module, ()):
             return module, target_name
 
         for candidate in _module_files(module, str(path), self.root):
