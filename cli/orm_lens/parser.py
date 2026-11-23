@@ -1452,8 +1452,14 @@ _PERMISSIONS_MIXIN = (
 
 # Fields of django.contrib.auth's abstract bases, which live in site-packages
 # where a workspace scan never looks. ``is_active`` on AbstractBaseUser is a
-# plain class attribute, not a field. A workspace class of the same name wins.
+# plain class attribute, not a field. ``TimeStampedModel`` declares
+# ``created`` and ``modified`` in both django-extensions and django-model-utils.
+# A workspace class of the same name wins.
 DJANGO_ABSTRACT_BASES: dict[str, tuple[ParsedField, ...]] = {
+    "TimeStampedModel": (
+        _django_field("created", "DateTimeField", "auto_now_add=True", "TimeStampedModel"),
+        _django_field("modified", "DateTimeField", "auto_now=True", "TimeStampedModel"),
+    ),
     "AbstractBaseUser": _ABSTRACT_BASE_USER,
     "PermissionsMixin": _PERMISSIONS_MIXIN,
     "AbstractUser": (

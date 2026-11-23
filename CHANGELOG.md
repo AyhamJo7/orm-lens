@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a critical conflict. The app's graph is now treated as unknown, as for
   computed `dependencies`, and the leaf check stays silent for that app.
 
+- **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
+  ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
+  django-extensions and django-model-utils both define an abstract
+  `TimeStampedModel` with these two fields, but it lives in site-packages, so
+  every subclass lost them and `drift` reported both as "migrated but no
+  longer declared". They now come from the same table as the
+  `django.contrib.auth` bases; a workspace class of that name still wins.
+
 ## [py-1.18.2] - 2026-11-22
 
 > Drift understands MPTT, parent links and hand-written migrations.
