@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **migration-risk: `NullBooleanField` is nullable without `null=True`**
+  ([#338](https://github.com/FROWNINGdev/orm-lens/issues/338)).
+  `NullBooleanField.__init__` sets `null=True` itself, so migrations never
+  write the keyword, and `AddField(field=models.NullBooleanField())` was
+  reported as a critical NOT NULL column. Nullability is now decided by one
+  helper that knows this field, also for the unique-column rule, where a
+  `NullBooleanField(unique=True)` fills existing rows with NULL and is safe.
+
+- **migration-risk: `auto_now` on a date field subclass has a default**
+  ([#339](https://github.com/FROWNINGdev/orm-lens/issues/339)).
+  `AddField` with django-extensions' `ModificationDateTimeField(auto_now=True)`
+  or `CreationDateTimeField(auto_now_add=True)` was reported as a critical
+  NOT NULL column without a default. Django fills existing rows with the
+  current time for these, as it does for `DateTimeField`. Any field whose name
+  ends in `DateField`, `DateTimeField` or `TimeField` now counts.
+
+- **migration-risk: a migration that does not parse no longer causes a leaf conflict**
+  ([#337](https://github.com/FROWNINGdev/orm-lens/issues/337)).
+  A file `ast.parse` rejects (for example Python 3.14's unparenthesised
+  `except A, B:` read on an older interpreter) dropped out of the graph, so its
+  parent looked like a second leaf and `conflicting_migration_leaves` reported
+  a critical conflict. The app's graph is now treated as unknown, as for
+  computed `dependencies`, and the leaf check stays silent for that app.
+
 - **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
   ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
   django-extensions and django-model-utils both define an abstract
