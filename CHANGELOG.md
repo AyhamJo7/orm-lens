@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--format github` and `--format sarif` name files from the checkout root
+  when `--path` is a subdirectory.** With the Action's `path: backend`,
+  `nplusone` wrote `file=shop/views.py` for `backend/shop/views.py`, and an
+  absolute `--path` did the same for `migration-risk` and `blast-radius`, so
+  GitHub could not place the annotations on the PR diff. Files under the
+  working directory are now written relative to it.
 - **`er --format dbml|d2|plantuml|dot` point a relation at the right one of
   two same-named models.** When two apps define a model with the same name
   (`basket.Line` and `order.Line`), these four formats drew every relation
